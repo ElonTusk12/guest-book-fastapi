@@ -20,12 +20,38 @@ def test_create_and_read_reviews(client):
     assert client.get("/reviews").json() == [review]
 
 
+@pytest.mark.parametrize(
+    ("payload", "loc"),
+    [
+        ({"author": "", "text": "Текст"}, "author"),
+        ({"author": "   ", "text": "Текст"}, "author"),
+        ({"author": "Иван", "text": ""}, "text"),
+        ({"author": "Иван", "text": "   "}, "text"),
+        ({"author": "а" * 101, "text": "Текст"}, "author"),
+        ({"author": "Иван", "text": "б" * 1001}, "text"),
+        ({"text": "Текст"}, "author"),
+        ({"author": "Иван"}, "text"),
+    ],
+)
 def test_invalid_input_is_rejected(client, payload, loc):
     response = client.post("/reviews", json=payload)
     assert response.status_code == 422
     locs = [err["loc"][-1] for err in response.json()["detail"]]
     assert loc in locs
     assert client.get("/reviews").json() == []
+
+
+def test_whitespace_is_stripped(client):
+    response = client.post("/reviews", json={"author": "  Иван  ", "text": "  Отзыв  "})
+    assert response.status_code == 201
+    assert response.json() == {"id": 1, "author": "Иван", "text": "Отзыв"}
+
+
+@pytest.mark.parametrize(("author", "text"), [("а", "б"), ("а" * 100, "б" * 1000)])
+def test_length_boundaries_are_accepted(client, author, text):
+    response = client.post("/reviews", json={"author": author, "text": text})
+    assert response.status_code == 201
+    assert response.json() == {"id": 1, "author": author, "text": text}
 
 
 def test_get_review_by_id(client):
@@ -72,6 +98,26 @@ def test_delete_nonexistent_review_returns_404(client):
     response = client.delete("/reviews/999")
     assert response.status_code == 404
     assert response.json() == {"detail": "Отзыв не найден"}
+
+
+def test_delete_review_then_repeat_returns_404(client):
+    created = client.post("/reviews", json={"author": "Олег", "text": "Всё супер"}).json()
+
+    response = client.delete(f"/reviews/{created['id']}")
+    assert response.status_code == 204
+    assert response.content == b""
+    assert client.get(f"/reviews/{created['id']}").status_code == 404
+    assert client.get("/reviews").json() == []
+
+    assert client.delete(f"/reviews/{created['id']}").status_code == 404
+
+
+def test_data_survives_app_restart(database_path):
+    with TestClient(create_app(database_path)) as first_client:
+        created = first_client.post("/reviews", json={"author": "Алиса", "text": "Отличный сервис!"}).json()
+
+    with TestClient(create_app(database_path)) as second_client:
+        assert second_client.get("/reviews").json() == [created]
 
 
 def test_openapi_describes_real_api(client):
